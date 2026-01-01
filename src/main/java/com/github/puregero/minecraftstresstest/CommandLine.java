@@ -6,9 +6,8 @@ public class CommandLine implements Runnable {
 
     @Override
     public void run() {
-        Scanner scanner = new Scanner(System.in);
-
-        while (scanner.hasNext()) {
+        try (Scanner scanner = new Scanner(System.in)) {
+            while (scanner.hasNext()) {
             String line = scanner.nextLine();
             String[] args = line.split(" ");
 
@@ -39,6 +38,7 @@ public class CommandLine implements Runnable {
                 }
             } catch (Exception e) {
                 e.printStackTrace();
+            }
             }
         }
     }

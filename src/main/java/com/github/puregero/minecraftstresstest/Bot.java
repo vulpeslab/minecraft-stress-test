@@ -281,13 +281,15 @@ public class Bot extends ChannelInboundHandlerAdapter {
             double dy = byteBuf.readDouble();
             double dz = byteBuf.readDouble();
             float dyaw = byteBuf.readFloat();
-            float dpitch = byteBuf.readFloat();
+            byteBuf.readFloat(); // dpitch - not tracked in this bot implementation
             byte flags = byteBuf.readByte();
             int id = byteBuf.readVarInt();
 
             x = (flags & 0x01) == 0x01 ? x + dx : dx;
             y = (flags & 0x02) == 0x02 ? y + dy : dy;
             z = (flags & 0x04) == 0x04 ? z + dz : dz;
+            yaw = (flags & 0x08) == 0x08 ? yaw + dyaw : dyaw;
+            // pitch is not tracked in this bot implementation
 
             if (LOGS) {
                 System.out.println("Teleporting " + username + " to " + x + "," + y + "," + z);

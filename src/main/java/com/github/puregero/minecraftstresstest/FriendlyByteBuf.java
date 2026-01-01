@@ -164,10 +164,12 @@ public class FriendlyByteBuf extends ByteBuf {
         return this.source.alloc();
     }
 
+    @SuppressWarnings("deprecation")
     public ByteOrder order() {
         return this.source.order();
     }
 
+    @SuppressWarnings("deprecation")
     public ByteBuf order(ByteOrder byteorder) {
         return this.source.order(byteorder);
     }
