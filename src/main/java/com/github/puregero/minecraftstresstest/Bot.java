@@ -46,6 +46,7 @@ public class Bot extends ChannelInboundHandlerAdapter {
     private boolean goUp = false;
     private boolean goDown = false;
     private boolean isSpawned = false;
+    private boolean isDead = false;
 
     public Bot(String username, String address, int port) {
         this.username = username;
@@ -309,7 +310,9 @@ public class Bot extends ChannelInboundHandlerAdapter {
 
             sendPacket(ctx, PacketIds.Serverbound.Play.CONFIRM_TELEPORTATION, buffer -> buffer.writeVarInt(id));
 
-            isSpawned = true;
+            if (!isDead) {
+                isSpawned = true;
+            }
 
         } else if (packetId == PacketIds.Clientbound.Play.RESOURCE_PACK) {
 
@@ -325,9 +328,29 @@ public class Bot extends ChannelInboundHandlerAdapter {
         } else if (packetId == PacketIds.Clientbound.Play.SET_HEALTH) {
 
             float health = byteBuf.readFloat();
+            // int food = byteBuf.readVarInt(); // Not needed for respawn logic
+            // float saturation = byteBuf.readFloat(); // Not needed for respawn logic
 
             if (health <= 0) {
-                sendPacket(ctx, PacketIds.Serverbound.Play.CLIENT_RESPAWN, buffer -> buffer.writeVarInt(0));
+                if (!isDead) {
+                    isDead = true;
+                    isSpawned = false;
+                    if (LOGS) {
+                        System.out.println(username + " died, attempting to respawn...");
+                    }
+
+                    // Delay respawn slightly to allow server to process death
+                    CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS).execute(() -> {
+                        sendPacket(ctx, PacketIds.Serverbound.Play.CLIENT_RESPAWN, buffer -> buffer.writeVarInt(0));
+                    });
+                }
+            } else {
+                if (isDead) {
+                    isDead = false;
+                    if (LOGS) {
+                        System.out.println(username + " has respawned with health " + health);
+                    }
+                }
             }
         }
     }
