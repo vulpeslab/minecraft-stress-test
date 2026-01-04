@@ -6,6 +6,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.socket.SocketChannel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -14,7 +15,46 @@ import java.util.function.Consumer;
 
 
 public class Bot extends ChannelInboundHandlerAdapter {
-    private static final int PROTOCOL_VERSION = Integer.parseInt(System.getProperty("bot.protocol.version", "767")); // 767 is 1.21 https://wiki.vg/Protocol_version_numbers
+    // Minecraft version to protocol version mapping
+    // https://minecraft.wiki/w/Protocol_version
+    private static final Map<String, Integer> VERSION_TO_PROTOCOL = Map.ofEntries(
+            Map.entry("1.20.6", 766),
+            Map.entry("1.21", 767),
+            Map.entry("1.21.1", 767),
+            Map.entry("1.21.2", 768),
+            Map.entry("1.21.3", 768),
+            Map.entry("1.21.4", 769),
+            Map.entry("1.21.5", 770),
+            Map.entry("1.21.6", 771),
+            Map.entry("1.21.7", 772),
+            Map.entry("1.21.8", 772),
+            Map.entry("1.21.9", 773),
+            Map.entry("1.21.10", 773),
+            Map.entry("1.21.11", 774)
+    );
+
+    public static final String DEFAULT_VERSION = "1.21";
+    private static final int PROTOCOL_VERSION = resolveProtocolVersion(System.getProperty("bot.version", DEFAULT_VERSION));
+    private static final PacketIds PACKETS = new PacketIds(PROTOCOL_VERSION);
+
+    private static int resolveProtocolVersion(String versionOrProtocol) {
+        // First check if it's a known version string
+        if (VERSION_TO_PROTOCOL.containsKey(versionOrProtocol)) {
+            int protocol = VERSION_TO_PROTOCOL.get(versionOrProtocol);
+            System.out.println("Using Minecraft " + versionOrProtocol + " (protocol " + protocol + ")");
+            return protocol;
+        }
+        // Otherwise try to parse as protocol number
+        try {
+            int protocol = Integer.parseInt(versionOrProtocol);
+            System.out.println("Using protocol version " + protocol);
+            return protocol;
+        } catch (NumberFormatException e) {
+            System.err.println("Unknown version '" + versionOrProtocol + "'. Supported versions: " + VERSION_TO_PROTOCOL.keySet());
+            System.err.println("Falling back to " + DEFAULT_VERSION);
+            return VERSION_TO_PROTOCOL.get(DEFAULT_VERSION);
+        }
+    }
     private static final double CENTER_X = Double.parseDouble(System.getProperty("bot.x", "0"));
     private static final double CENTER_Z = Double.parseDouble(System.getProperty("bot.z", "0"));
     private static final boolean LOGS = Boolean.parseBoolean(System.getProperty("bot.logs", "true"));
@@ -152,7 +192,6 @@ public class Bot extends ChannelInboundHandlerAdapter {
 
         loginState = false;
         configState = true;
-        //System.out.println("changing to config mode");
 
         CompletableFuture.delayedExecutor(1000, TimeUnit.MILLISECONDS).execute(() -> {
             if (configState) {
@@ -165,6 +204,9 @@ public class Bot extends ChannelInboundHandlerAdapter {
                     buffer.writeVarInt(0);
                     buffer.writeBoolean(false);
                     buffer.writeBoolean(true);
+                    if (PROTOCOL_VERSION >= 773) {
+                        buffer.writeVarInt(0);
+                    }
                 });
 
                 sendPacket(ctx, PacketIds.Serverbound.Configuration.KNOWN_PACKS, buffer -> {
@@ -218,7 +260,7 @@ public class Bot extends ChannelInboundHandlerAdapter {
             y -= SPEED / 10;
         }
 
-        sendPacket(ctx, PacketIds.Serverbound.Play.SET_PLAYER_POSITION_AND_ROTATION, buffer -> {
+        sendPacket(ctx, PACKETS.PLAY_SET_PLAYER_POSITION_AND_ROTATION, buffer -> {
             buffer.writeDouble(x);
             buffer.writeDouble(y);
             buffer.writeDouble(z);
@@ -243,18 +285,29 @@ public class Bot extends ChannelInboundHandlerAdapter {
 
             configState = false;
             playState = true;
-            //System.out.println("changing to play mode");
 
         } else if (packetId == PacketIds.Clientbound.Configuration.KEEP_ALIVE) {
             long id = byteBuf.readLong();
             sendPacket(ctx, PacketIds.Serverbound.Configuration.KEEP_ALIVE, buffer -> buffer.writeLong(id));
-            //System.out.println(username + " (" + uuid + ") keep alive config mode");
 
         } else if (packetId == PacketIds.Clientbound.Configuration.PING) {
             int id = byteBuf.readInt();
             sendPacket(ctx, PacketIds.Serverbound.Configuration.PONG, buffer -> buffer.writeInt(id));
-            //System.out.println(username + " (" + uuid + ") ping config mode");
 
+        } else if (packetId == PacketIds.Clientbound.Configuration.KNOWN_PACKS) {
+            int packCount = byteBuf.readVarInt();
+            java.util.List<String[]> packs = new java.util.ArrayList<>();
+            for (int i = 0; i < packCount; i++) {
+                packs.add(new String[]{byteBuf.readUtf(), byteBuf.readUtf(), byteBuf.readUtf()});
+            }
+            sendPacket(ctx, PacketIds.Serverbound.Configuration.KNOWN_PACKS, buffer -> {
+                buffer.writeVarInt(packs.size());
+                for (String[] pack : packs) {
+                    buffer.writeUtf(pack[0]);
+                    buffer.writeUtf(pack[1]);
+                    buffer.writeUtf(pack[2]);
+                }
+            });
         }
     }
 
@@ -262,93 +315,124 @@ public class Bot extends ChannelInboundHandlerAdapter {
     private void channelReadPlay(ChannelHandlerContext ctx, FriendlyByteBuf byteBuf) {
         int packetId = byteBuf.readVarInt();
 
-        if (packetId == PacketIds.Clientbound.Play.DISCONNECT) {
+        if (LOGS) {
+            System.out.println(username + " play packet: 0x" + Integer.toHexString(packetId) + " (" + byteBuf.readableBytes() + " bytes)");
+        }
+
+        if (packetId == PACKETS.PLAY_DISCONNECT) {
             System.out.println(username + " (" + uuid + ") was kicked due to " + byteBuf.readUtf());
             ctx.close();
             loginState = true;
             playState = false;
 
-        } else if (packetId == PacketIds.Clientbound.Play.KEEP_ALIVE) {
-            long id = byteBuf.readLong();
-            sendPacket(ctx, PacketIds.Serverbound.Play.KEEP_ALIVE, buffer -> buffer.writeLong(id));
+        } else if (packetId == PACKETS.PLAY_KEEP_ALIVE) {
+            if (byteBuf.readableBytes() >= 8) {
+                long id = byteBuf.readLong();
+                sendPacket(ctx, PACKETS.PLAY_KEEP_ALIVE_RESPONSE, buffer -> buffer.writeLong(id));
+            }
 
-        } else if (packetId == PacketIds.Clientbound.Play.PING) {
-            int id = byteBuf.readInt();
-            sendPacket(ctx, PacketIds.Serverbound.Play.PONG, buffer -> buffer.writeInt(id));
+        } else if (packetId == PACKETS.PLAY_PING) {
+            if (byteBuf.readableBytes() >= 4) {
+                int id = byteBuf.readInt();
+                sendPacket(ctx, PACKETS.PLAY_PONG, buffer -> buffer.writeInt(id));
+            }
 
-        } else if (packetId == PacketIds.Clientbound.Play.SYNCHRONIZE_PLAYER_POSITION) {
+        } else if (packetId == PACKETS.PLAY_SYNCHRONIZE_PLAYER_POSITION) {
+            int minBytes = PROTOCOL_VERSION >= 768 ? 61 : 33;
+            if (byteBuf.readableBytes() < minBytes) {
+                return;
+            }
 
-            double dx = byteBuf.readDouble();
-            double dy = byteBuf.readDouble();
-            double dz = byteBuf.readDouble();
-            float dyaw = byteBuf.readFloat();
-            byteBuf.readFloat(); // dpitch - not tracked in this bot implementation
-            byte flags = byteBuf.readByte();
-            int id = byteBuf.readVarInt();
+            int id;
+            double px, py, pz;
+            float pyaw;
+            int flags;
 
-            x = (flags & 0x01) == 0x01 ? x + dx : dx;
-            y = (flags & 0x02) == 0x02 ? y + dy : dy;
-            z = (flags & 0x04) == 0x04 ? z + dz : dz;
-            yaw = (flags & 0x08) == 0x08 ? yaw + dyaw : dyaw;
-            // pitch is not tracked in this bot implementation
+            if (PROTOCOL_VERSION >= 768) {
+                id = byteBuf.readVarInt();
+                px = byteBuf.readDouble();
+                py = byteBuf.readDouble();
+                pz = byteBuf.readDouble();
+                byteBuf.readDouble();
+                byteBuf.readDouble();
+                byteBuf.readDouble();
+                pyaw = byteBuf.readFloat();
+                byteBuf.readFloat();
+                flags = byteBuf.readInt();
+            } else {
+                px = byteBuf.readDouble();
+                py = byteBuf.readDouble();
+                pz = byteBuf.readDouble();
+                pyaw = byteBuf.readFloat();
+                byteBuf.readFloat();
+                flags = byteBuf.readByte();
+                id = byteBuf.readVarInt();
+            }
+
+            x = (flags & 0x01) == 0x01 ? x + px : px;
+            y = (flags & 0x02) == 0x02 ? y + py : py;
+            z = (flags & 0x04) == 0x04 ? z + pz : pz;
+            yaw = (flags & 0x08) == 0x08 ? yaw + pyaw : pyaw;
 
             if (LOGS) {
                 System.out.println("Teleporting " + username + " to " + x + "," + y + "," + z);
             }
 
-            // Try going up to go over the block, or turn around and go a different way
             if (goDown) {
                 goDown = false;
             } else if (!goUp) {
                 goUp = true;
             } else {
-                // We hit our head on something
                 goUp = false;
                 goDown = Math.random() < 0.5;
                 if (!goDown) yaw = (float) (Math.random() * 360);
             }
 
-            sendPacket(ctx, PacketIds.Serverbound.Play.CONFIRM_TELEPORTATION, buffer -> buffer.writeVarInt(id));
+            sendPacket(ctx, PACKETS.PLAY_CONFIRM_TELEPORTATION, buffer -> buffer.writeVarInt(id));
 
             if (!isDead) {
                 isSpawned = true;
             }
 
-        } else if (packetId == PacketIds.Clientbound.Play.RESOURCE_PACK) {
-
-            String url = byteBuf.readUtf();
-            String hash = byteBuf.readUtf();
-            boolean forced = byteBuf.readBoolean();
-            String message = null;
-            if (byteBuf.readBoolean()) message = byteBuf.readUtf();
-            System.out.println("Resource pack info:\n" + url + "\n" + hash + "\n" + forced + "\n" + message);
-
-            sendPacket(ctx, PacketIds.Serverbound.Play.RESOURCE_PACK, buffer -> buffer.writeVarInt(RESOURCE_PACK_RESPONSE));
-
-        } else if (packetId == PacketIds.Clientbound.Play.SET_HEALTH) {
-
-            float health = byteBuf.readFloat();
-            // int food = byteBuf.readVarInt(); // Not needed for respawn logic
-            // float saturation = byteBuf.readFloat(); // Not needed for respawn logic
-
-            if (health <= 0) {
-                if (!isDead) {
-                    isDead = true;
-                    isSpawned = false;
-                    if (LOGS) {
-                        System.out.println(username + " died, attempting to respawn...");
-                    }
-
-                    // Delay respawn slightly to allow server to process death
-                    CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS).execute(() -> {
-                        sendPacket(ctx, PacketIds.Serverbound.Play.CLIENT_RESPAWN, buffer -> buffer.writeVarInt(0));
-                    });
+        } else if (packetId == PACKETS.PLAY_RESOURCE_PACK) {
+            if (byteBuf.readableBytes() >= 16) {
+                UUID packUuid = byteBuf.readUUID();
+                String url = byteBuf.readUtf();
+                byteBuf.readUtf();
+                byteBuf.readBoolean();
+                if (byteBuf.readBoolean()) byteBuf.readUtf();
+                if (LOGS) {
+                    System.out.println("Resource pack: " + url);
                 }
-            } else {
-                if (isDead) {
-                    isDead = false;
-                    if (LOGS) {
-                        System.out.println(username + " has respawned with health " + health);
+
+                sendPacket(ctx, PACKETS.PLAY_RESOURCE_PACK_RESPONSE, buffer -> {
+                    buffer.writeUUID(packUuid);
+                    buffer.writeVarInt(RESOURCE_PACK_RESPONSE);
+                });
+            }
+
+        } else if (packetId == PACKETS.PLAY_SET_HEALTH) {
+            if (byteBuf.readableBytes() >= 4) {
+                float health = byteBuf.readFloat();
+
+                if (health <= 0) {
+                    if (!isDead) {
+                        isDead = true;
+                        isSpawned = false;
+                        if (LOGS) {
+                            System.out.println(username + " died, attempting to respawn...");
+                        }
+
+                        CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS).execute(() -> {
+                            sendPacket(ctx, PACKETS.PLAY_CLIENT_COMMAND, buffer -> buffer.writeVarInt(0));
+                        });
+                    }
+                } else {
+                    if (isDead) {
+                        isDead = false;
+                        if (LOGS) {
+                            System.out.println(username + " has respawned with health " + health);
+                        }
                     }
                 }
             }

@@ -17,6 +17,8 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
@@ -31,6 +33,10 @@ public class MinecraftStressTest {
 
     public static final String DEFAULT_BOT_COUNT = "1";
     public static int BOT_COUNT = Integer.parseInt(System.getProperty("bot.count", DEFAULT_BOT_COUNT));
+
+    private static final int MAX_EXECUTION_TIME_SECONDS = Integer.parseInt(System.getProperty("bot.max.execution.time", "0"));
+    private static final int WATCHDOG_GRACE_PERIOD_SECONDS = 30;
+    private static volatile boolean shuttingDown = false;
 
     private static final List<Bot> bots = new ArrayList<>();
     private static final Lock botsLock = new ReentrantLock();
@@ -58,11 +64,71 @@ public class MinecraftStressTest {
             return;
         }
 
+        if (MAX_EXECUTION_TIME_SECONDS > 0) {
+            scheduleShutdown();
+        }
+
         updateBotCount();
 
         new CommandLine().run();
 
         System.out.println("stdin ended");
+        shutdown();
+    }
+
+    private static void scheduleShutdown() {
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1, r -> {
+            Thread t = new Thread(r, "ShutdownScheduler");
+            t.setDaemon(true);
+            return t;
+        });
+
+        System.out.println("Max execution time set to " + MAX_EXECUTION_TIME_SECONDS + " seconds. " +
+                "Graceful shutdown will begin after this time, forced exit after " +
+                (MAX_EXECUTION_TIME_SECONDS + WATCHDOG_GRACE_PERIOD_SECONDS) + " seconds.");
+
+        // Schedule graceful shutdown
+        scheduler.schedule(() -> {
+            System.out.println("Max execution time reached. Initiating graceful shutdown...");
+            shutdown();
+        }, MAX_EXECUTION_TIME_SECONDS, TimeUnit.SECONDS);
+
+        // Schedule watchdog for forced exit
+        scheduler.schedule(() -> {
+            System.out.println("Watchdog triggered! Graceful shutdown did not complete within " +
+                    WATCHDOG_GRACE_PERIOD_SECONDS + " seconds. Forcing exit...");
+            System.exit(1);
+        }, MAX_EXECUTION_TIME_SECONDS + WATCHDOG_GRACE_PERIOD_SECONDS, TimeUnit.SECONDS);
+    }
+
+    private static void shutdown() {
+        if (shuttingDown) {
+            return;
+        }
+        shuttingDown = true;
+
+        System.out.println("Shutting down...");
+
+        // Disconnect all bots
+        botsLock.lock();
+        try {
+            for (Bot bot : bots) {
+                try {
+                    bot.close();
+                } catch (Exception e) {
+                    // Ignore errors during shutdown
+                }
+            }
+            bots.clear();
+        } finally {
+            botsLock.unlock();
+        }
+
+        // Shutdown the Netty event loop group
+        workerGroup.shutdownGracefully().syncUninterruptibly();
+
+        System.out.println("Shutdown complete.");
+        System.exit(0);
     }
 
     private static void printHelp() {
@@ -81,13 +147,22 @@ public class MinecraftStressTest {
         System.out.println("  -Dbot.viewdistance=<distance> Set the view distance (default: 2)");
         System.out.println("  -Dbot.speed=<speed>           Set the bot movement speed (default: 0.1)");
         System.out.println("  -Dbot.radius=<radius>         Set the movement radius (default: 1000)");
+        System.out.println("  -Dbot.version=<version>       Set Minecraft version (default: " + Bot.DEFAULT_VERSION + ")");
+        System.out.println("                                Supported: 1.20.6, 1.21-1.21.11 (or protocol number)");
+        System.out.println("  -Dbot.max.execution.time=<s>  Set max execution time in seconds (default: 0 = unlimited)");
         System.out.println("\nRuntime Commands:");
         System.out.println("  count <number>                Change the number of bots");
         System.out.println("  speed <value>                 Change the bot movement speed");
         System.out.println("  radius <value>                Change the movement radius");
         System.out.println("  logindelay <value>            Change the delay between bot logins");
-        System.out.println("\nExample:");
+        System.out.println("\nExecution Time:");
+        System.out.println("  When bot.max.execution.time is set, all bots will disconnect gracefully after");
+        System.out.println("  the specified time. A watchdog will force exit 30 seconds after if graceful");
+        System.out.println("  shutdown doesn't complete.");
+        System.out.println("\nExamples:");
         System.out.println("  java -Dbot.ip=localhost -Dbot.port=25565 -Dbot.count=10 -jar minecraft-stress-test.jar");
+        System.out.println("  java -Dbot.count=100 -Dbot.max.execution.time=300 -jar minecraft-stress-test.jar");
+        System.out.println("  java -Dbot.version=1.21.4 -Dbot.count=50 -jar minecraft-stress-test.jar");
     }
 
     public static void updateBotCount() {
