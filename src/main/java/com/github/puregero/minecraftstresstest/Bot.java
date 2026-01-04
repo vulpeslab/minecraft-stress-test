@@ -427,12 +427,11 @@ public class Bot extends ChannelInboundHandlerAdapter {
                             sendPacket(ctx, PACKETS.PLAY_CLIENT_COMMAND, buffer -> buffer.writeVarInt(0));
                         });
                     }
-                } else {
-                    if (isDead) {
-                        isDead = false;
-                        if (LOGS) {
-                            System.out.println(username + " has respawned with health " + health);
-                        }
+                } else if (isDead) {
+                    isDead = false;
+                    isSpawned = true;
+                    if (LOGS) {
+                        System.out.println(username + " has respawned with health " + health);
                     }
                 }
             }
