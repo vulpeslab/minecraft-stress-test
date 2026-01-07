@@ -315,10 +315,6 @@ public class Bot extends ChannelInboundHandlerAdapter {
     private void channelReadPlay(ChannelHandlerContext ctx, FriendlyByteBuf byteBuf) {
         int packetId = byteBuf.readVarInt();
 
-        if (LOGS) {
-            System.out.println(username + " play packet: 0x" + Integer.toHexString(packetId) + " (" + byteBuf.readableBytes() + " bytes)");
-        }
-
         if (packetId == PACKETS.PLAY_DISCONNECT) {
             System.out.println(username + " (" + uuid + ") was kicked due to " + byteBuf.readUtf());
             ctx.close();
